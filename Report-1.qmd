@@ -1,0 +1,338 @@
+---
+title: "Homework 5"
+format: pdf
+editor: visual
+---
+
+# Motivation
+
+Dementia is a term used to describe a group of symptoms that affect cognitive abilities, memory, thinking, and social abilities to the extent that it interferes with daily functioning. It is not a specific disease itself, but rather a syndrome or a set of symptoms caused by various underlying conditions.
+
+The most common cause of dementia is Alzheimer's disease, accounting for 60-80% of cases. Alzheimer's disease is a progressive brain disorder characterized by the accumulation of abnormal protein deposits (amyloid plaques and neurofibrillary tangles) in the brain, leading to the death of brain cells and a decline in cognitive function.
+
+Doctors cannot diagnose dementia through a single test. Instead, they rely on a combination of factors such as a thorough medical history, physical examination, laboratory tests, and observation of changes in thinking, behavior, and day-to-day function. While doctors can usually determine that a person has dementia, identifying the specific type can be difficult since different forms of dementia can share symptoms and brain changes. Sometimes, a doctor may diagnose dementia without specifying the exact type, and in such cases, a specialist such as a neurologist or gero-psychologist may need to be consulted.
+
+This dataset contains longitudinal data from 150 individuals aged between 60 and 96, with each subject having been scanned at least twice, with a gap of at least one year between scans. The total number of imaging sessions included in the collection is 373, and each subject has 3 or 4 individual T1-weighted MRI scans obtained in a single scan session. Both men and women are included, and all subjects are right-handed. Of the 150 subjects, 72 were considered to be free of dementia throughout the study, while 64 were initially diagnosed with dementia and remained so during subsequent scans, with 51 of these individuals having mild to moderate Alzheimer's disease. Finally, 14 individuals were initially considered to be free of dementia, but were later diagnosed with dementia during subsequent visits.
+
+## Explanation of Variables:
+
+Subject.ID MRI.ID Group (Converted / Demented / Nondemented) Visit - Number of visit
+
+Demographics Info: M.F - Gender Hand - Handedness (actually all subjects were right-handed so I will drop this column) , Age EDUC - Years of education, SES - Socioeconomic status as assessed by the Hollingshead Index of Social Position and classified into categories from 1 (highest status) to 5 (lowest status)
+
+Clinical Info: MMSE - Mini-Mental State Examination score (range is from 0 = worst to 30 = best)
+
+CDR - Clinical Dementia Rating (0 = no dementia, 0.5 = very mild AD, 1 = mild AD, 2 = moderate AD) Derived anatomic volumes
+
+eTIV - Estimated total intracranial volume, mm3
+
+nWBV - Normalized whole-brain volume, expressed as a percent of all voxels in the atlas-masked image that are labeled as gray or white matter by the automated tissue segmentation process A
+
+SF - Atlas scaling factor (unitless). Computed scaling factor that transforms native-space brain and skull to the atlas target (i.e., the determinant of the transform matrix)
+
+Mini--Mental State Examination MMSE : The Mini-Mental State Examination (MMSE), also known as the Folstein test, is a widely-used questionnaire with 30 points that helps to assess cognitive impairment in clinical and research settings. It is commonly used in the medical and allied health fields as a screening tool for dementia and to measure the severity and progression of cognitive impairment in an individual over time. This makes it a useful way to track an individual's response to treatment. However, it is important to note that the MMSE is not intended to provide a diagnosis for any specific medical condition on its own. A score of 24 points or higher on the MMSE indicates normal cognitive function. Scores below this range can suggest mild (19-23 points), moderate (10-18 points), or severe (9 points or less) cognitive impairment. Educational attainment and age may need to be taken into account when interpreting the raw score. It should be noted that a score of 30 points on the MMSE does not necessarily rule out the presence of dementia. Low scores on the MMSE are strongly associated with dementia, but abnormal findings on the test can also indicate the presence of other mental disorders. Additionally, physical problems such as hearing or vision impairment or motor deficits can interfere with test interpretation if not properly accounted for.
+
+Clinical Dementia Rating (CDR) :The CDR™ is a 5-point scale that assesses cognitive and functional performance in six areas related to Alzheimer's disease and similar dementias. These areas are Memory, Orientation, Judgment & Problem Solving, Community Affairs, Home & Hobbies, and Personal Care. To determine a rating for each area, a semi-structured interview is conducted with the patient and a reliable informant, typically a family member. This process is known as the CDR™ Assessment Protocol.
+
+To guide clinicians in making appropriate ratings based on interview data and clinical judgment, the CDR™ Scoring Table provides descriptive anchors. In addition to ratings for each domain, an overall CDR™ score can be calculated using the CDR™ Scoring Algorithm. This score is useful for characterizing and monitoring the patient's level of impairment or dementia. 0 = Normal 0.5 = Very Mild Dementia 1 = Mild Dementia 2 = Moderate Dementia 3 = Severe Dementia
+
+## Loading Libraries
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(Hmisc)
+library(PerformanceAnalytics)
+library(cowplot)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(e1071)
+library(randomForest)
+library(gbm)
+library(Metrics)
+library(vtreat)
+library(AUC)
+library(DataExplorer)
+set.seed(123)
+data <- read.csv("Dementia.csv")
+print(sample_n(data, 10))
+```
+
+Obtain details on every variable in the dataset.
+
+```{r describe, message=FALSE, warning=FALSE, paged.print=TRUE}
+describe(data)
+chart.Correlation(select(data, Age, EDUC, SES, MMSE, eTIV, nWBV, ASF), histogram = TRUE, main = "Correlation between Variables")
+```
+
+Earlier, it was observed that certain columns in the dataset contain null values. Therefore, the next step would be to substitute those missing values with the median value for the respective column.
+
+```{r}
+data <- select(data, -Hand) #drop Hand column since all objects were right-handed
+data$SES[is.na(data$SES)] <- median(data$SES, na.rm = TRUE)
+data$MMSE[is.na(data$MMSE)] <- median(data$MMSE, na.rm = TRUE)
+
+#creating new column with Dementia diagnosis
+#data$Dementia <- 0
+#data$Dementia[data$CDR == 0] <- 0
+#data$Dementia[data$CDR > 0] <- 1
+#data$Dementia <- as.factor(data$Dementia)
+```
+
+# Exploratory Data Analysis
+
+Class of CDR will be our predicted value. Let's see how it depends on other variables.
+
+```{r}
+ggplot(data, aes(x=factor(M.F)))+
+  geom_bar(width=0.7, fill="steelblue")+
+  theme_minimal() + labs(title = "1. Gender distribution",
+       x = "Gender",
+       y = "Count")
+
+```
+
+More females than males in this scenario.
+
+```{r}
+ggplot(data = data,
+       aes(
+         x = Group,
+         y = prop.table(stat(count)),
+         fill = factor(data$M.F), width = -6,
+         label = scales::percent(prop.table(stat(count)))
+       )) +
+  geom_bar(position = position_dodge(), width = 0.4) + theme(axis.text = element_text(size = -0.5))+
+  geom_text(
+    stat = "count",
+    position = position_dodge(.8),
+    vjust = -1,
+    size = 2.5
+  ) + scale_y_continuous(labels = scales::percent) +
+  labs(title = "2. Group of Dementia based on Gender",
+       x = "Group",
+       y = "Count") +
+  theme_classic() +
+  scale_fill_discrete(
+    name = "Gender",
+    labels = c("Female", "Male")
+  )
+  
+```
+
+We can see that the highest is Non-demented people and the highest is Females.
+
+A violin plot is a graphical representation that shows the distribution of numerical data for one or multiple groups using density curves. The thickness of each curve represents the approximate frequency of data points in that region. It is a type of data visualization that is effective for comparing the distribution of numeric data across one or more groups. It is a useful tool for identifying differences and similarities between groups and for observing the shape and density of each distribution.
+
+```{r}
+data %>%
+    select(Subject.ID, Age, CDR, M.F) %>%
+    group_by(Subject.ID, CDR, M.F) %>%
+    summarise_all(funs(min)) %>%
+    as.data.frame() %>%
+    mutate(CDR = as.factor(CDR)) %>%
+ggplot(aes(x = CDR, y = Age, fill = M.F)) + 
+    geom_violin() +
+    labs(title = "3. Distribution of Age by CDR rate",
+         fill = "Sex") +
+    theme_light()
+```
+
+There does not appear to be a clear correlation between age, sex, and the diagnosis of dementia.
+
+The jitter geom is a convenient shortcut for geom_point(position = "jitter"). It introduces a slight amount of random variation to the placement of each point, which can be beneficial in addressing the issue of overplotting that arises from the limited amount of data points in smaller datasets.
+
+```{r}
+a <- data %>%
+    select(EDUC, CDR, M.F) %>%
+    mutate(CDR = as.factor(CDR)) %>%
+ggplot(aes(x = CDR, y = EDUC)) + 
+    geom_jitter(aes(col = CDR), alpha = 0.6) +
+    labs(title = "x") +
+    theme_light()
+
+b <- data %>%
+    select(SES, CDR, M.F) %>%
+    mutate(CDR = as.factor(CDR)) %>%
+ggplot(aes(x = CDR, y = SES)) + 
+    geom_jitter(aes(col = CDR), alpha = 0.6) +
+    labs(title = "x") +
+    theme_light()
+
+p <- plot_grid(a, b) 
+title <- ggdraw() + draw_label("4. Distribution of Education and Social Economic Status", fontface='bold')
+plot_grid(title, p, ncol=1, rel_heights=c(0.1, 1))
+```
+
+There is still no clear association observed between the level of education and socioeconomic status, and the diagnosis of dementia.
+
+```{r}
+ggplot(data) + aes(x = CDR, y = SES) + geom_boxplot(fill = "#0c4c8a") + theme_minimal()
+
+
+```
+
+```{r}
+ggplot(data) + aes(x = CDR, y = eTIV) + geom_boxplot(fill = "#0c4c8a") + theme_minimal()
+
+
+```
+
+```{r}
+ggplot(data) + aes(x = CDR, y = nWBV) + geom_boxplot(fill = "#0c4c8a") + theme_minimal()
+
+
+```
+
+```{r}
+ggplot(data) + aes(x = CDR, y = ASF) + geom_boxplot(fill = "#0c4c8a") + theme_minimal()
+
+
+```
+
+```{r}
+x <- data %>%
+    select(MMSE, CDR, M.F) %>%
+    mutate(CDR = as.factor(CDR)) %>%
+ggplot(aes(x = CDR, y = MMSE)) + 
+    geom_jitter(aes(col = CDR), alpha = 0.6) +
+    labs(title = "x") +
+    theme_light()
+
+y <- data %>%
+    select(nWBV, CDR, M.F) %>%
+    mutate(CDR = as.factor(CDR)) %>%
+ggplot(aes(x = CDR, y = nWBV)) + 
+    geom_jitter(aes(col = CDR), alpha = 0.6) +
+    labs(title = "x") +
+    theme_light()
+p <- plot_grid(x, y) 
+title <- ggdraw() + draw_label("5. Distribution of MMSE Score and Wole-brain Volume", fontface='bold')
+plot_grid(title, p, ncol=1, rel_heights=c(0.1, 1))
+```
+
+The MMS test scores of individuals without Dementia tend to cluster around 27-30 points, whereas the scores of those diagnosed with Dementia appear to be more widely distributed. We observe that some individuals have the highest MMSE scores, but still have a Clinical Dementia Rating of 0.5 or 1. There does not appear to be a clear relationship between Estimated total intracranial volume and Dementia Diagnosis.
+
+```{r}
+a <- data %>%
+    select(eTIV, CDR, M.F) %>%
+    mutate(CDR = as.factor(CDR)) %>%
+ggplot(aes(x = CDR, y = eTIV)) + 
+    geom_jitter(aes(col = CDR), alpha = 0.6) +
+    labs(title = "x") +
+    theme_light()
+
+b <- data %>%
+    select(ASF, CDR, M.F) %>%
+    mutate(CDR = as.factor(CDR)) %>%
+ggplot(aes(x = CDR, y = ASF)) + 
+    geom_jitter(aes(col = CDR), alpha = 0.6) +
+    labs(title = "x") +
+    theme_light()
+p <- plot_grid(a, b) 
+title <- ggdraw() + draw_label("6. Distribution of Total Intracranial Volume and Atlas Scaling Factor", fontface='bold')
+plot_grid(title, p, ncol=1, rel_heights=c(0.1, 1))
+
+```
+
+The whole-brain volume that has been normalized appears to have a wider range for subjects with a CDR score of 0, but narrows as the CDR score increases. However, there doesn't seem to be a clear relationship between the atlas scaling factor and dementia diagnosis.
+
+```{r, warning = TRUE}
+data %>% 
+  ggplot(aes(CDR,fill=CDR))+geom_bar()+
+  theme_minimal()+
+  labs(x="Clinical Dementia Rating",y="Frequency",title="7. CDR Distribution")+
+  theme(plot.title = element_text(hjust=0.5,color="black",face="bold"),
+        axis.text = element_text(face="italic",size=12))+
+  scale_fill_manual(values=c(RColorBrewer::brewer.pal(4,"PuRd")))
+```
+
+```{r, warning = TRUE}
+plot_boxplot(data, by = "CDR")
+```
+
+#Tree-based Models 
+Tree-based models, such as decision trees, random forests, and gradient boosting machines, are popular in machine learning due to several advantages:
+
+Interpretability: Decision trees are straightforward to understand because they mimic human decision-making more closely than other types of models. The tree-like model structure, where each node represents a decision based on a single feature, can be visualized and explained easily.
+
+Non-linearity: Tree-based models can handle complex non-linear relationships between features and the target variable, making them versatile and widely applicable.
+
+Feature Interactions: They automatically consider interactions between variables, which can be a significant advantage over other algorithms for certain types of data.
+
+Scalability: Techniques such as random forests and gradient boosting can handle large datasets and high-dimensional data quite well, making them suitable for many real-world applications.
+
+Less Preprocessing: They require less preprocessing of data than other machine learning techniques. Features don't need to be scaled or centered and they can handle mixed data types (categorical and numerical).
+
+##Preparation and splitting the data
+
+```{r}
+#preparing data
+df <- data %>%
+  select(M.F, Age, EDUC, SES, MMSE, eTIV, nWBV, ASF, CDR) %>%
+  mutate(CDR = as.factor(CDR))
+
+n_train <- round(0.8 * nrow(df)) #80%  data set (length) as integer
+train_index <- sample(1:nrow(df), n_train) #creating a vector with random indices
+train <- df[train_index, ] #creating train data set 
+test <- df[-train_index, ] #creating test data set
+
+formula <- CDR ~ M.F + Age + EDUC + SES + MMSE + eTIV + nWBV #CDR as response and all other variables as predictors
+k <- 5   #(k=5)cross validation
+splitPlan <- kWayCrossValidation(nrow(df), k, NULL, NULL) #creating 5-folds cross validation idea
+```
+
+The training formula is: CDR is predicted by the variables M.F, Age, EDUC, SES, MMSE, eTIV, and nWBV. Atlas Scaling Factor (ASF) has been removed from the formula due to its linear dependancy leading to multicollinearity.
+
+# Decision Tree Model
+
+Decision trees are a popular choice in many machine learning applications because they offer several unique benefits:
+
+Interpretability: One of the primary strengths of decision trees is their interpretability. They are simple to understand and interpret as they mimic human decision-making process. A decision tree can easily be visualized and explained, making it a preferred choice when model interpretability is a crucial factor.
+
+Handling of Non-linear Data: Decision trees can easily handle both linear and non-linear data. They can model complex relationships between predictors and the target variable by dividing the feature space into smaller regions.
+
+Moving forward, we'll begin by training a fundamental decision tree model and showcasing the results to pinpoint the best complexity parameter (CP) value through cross-validation. The complexity parameter serves to control the decision tree's size and to help choose the most fitting tree size.
+```{r}
+opt_compar <- 0 #list with optimal parameters
+for(i in 1:k) {
+  split <- splitPlan[[i]]
+  #training decision tree model
+  model_crossv <- rpart(formula = formula,
+               data = df[split$train,],
+               method = "class")
+  #get the best CP value
+  opt_compar[i] <- model_crossv$cptable[which.min(model_crossv$cptable[,"xerror"]),"CP"]
+}
+
+#training the model with optimal CP parameter on whole data set
+model_decisiontree <- rpart(formula = formula,
+               data = df,
+               method = "class",
+               cp = mean(opt_compar))
+#plotingt decision tree model
+prp(x = model_decisiontree, type=1, extra = 102)
+
+```
+
+```{r}
+#testing the model
+prediction_dt <- predict(object = model_crossv,
+                newdata = df,
+                type = "class")
+
+#print confusion matrix
+confusionMatrix(data = prediction_dt,
+                reference = df$CDR)
+```
+
+The confusion matrix presents the counts of predicted classes (rows) compared to the actual reference classes (columns). For example, in the first row, the model predicted class 0 for 188 instances where the actual reference class was also 0. Similarly, the model predicted class 0.5 for 87 instances where the actual reference class was 0.5.
+
+##Overall Statistics:
+
+Accuracy: The overall accuracy of the model is 0.7828, indicating that approximately 78.28% of the predictions were correct. 95% CI: The 95% confidence interval for the accuracy ranges from 0.7375 to 0.8236. No Information Rate (NIR): The NIR represents the accuracy that could be achieved by always predicting the most frequent class in the data. In this case, the NIR is 0.5523, suggesting that the model performs significantly better than simply predicting the most common class. Kappa: The Kappa statistic measures the agreement between the predicted and actual classes, considering the possibility of agreement occurring by chance. A value of 0.6005 indicates moderate agreement.
+
+## Statistics by Class:
+
+This section provides metrics such as sensitivity, specificity, positive predictive value (PPV), negative predictive value (NPV), prevalence, detection rate, detection prevalence, and balanced accuracy for each class. Sensitivity: Also known as the true positive rate or recall, it represents the proportion of correctly predicted instances of a particular class out of all instances of that class. For example, the sensitivity for class 0 is 0.9126, indicating that the model successfully predicted class 0 in 91.26% of instances where the actual class was 0. Specificity: This refers to the true negative rate, which is the proportion of correctly predicted instances that do not belong to a specific class out of all instances not belonging to that class. For instance, the specificity for class 1 is 0.99398, indicating that the model correctly identified 99.398% of instances not belonging to class 1. Pos Pred Value: The positive predictive value, also known as precision, represents the proportion of correctly predicted instances of a particular class out of all instances predicted as that class. For example, the PPV for class 0.5 is 0.7073, meaning that 70.73% of instances predicted as class 0.5 were actually class 0.5. Neg Pred Value: The negative predictive value represents the proportion of correctly predicted instances not belonging to a particular class out of all instances not predicted as that class. For instance, the NPV for class 2 is 0.991957, meaning that 99.1957% of instances predicted as not class 2 were indeed not class 2. Prevalence: This indicates the proportion of instances belonging to a particular class out of all instances. For example, the prevalence of class 0 is 0.5523, indicating that 55.23% of instances belong to class 0. Detection Rate: This represents the proportion of correctly predicted instances of a particular class out of all instances. For example, the detection rate for class 0.5 is 0.2332, meaning that the model successfully detected 23.32% of instances belonging to class 0.5. Detection Prevalence: This refers to the proportion of instances predicted as a particular class out of all instances. For example, the detection prevalence for class 1 is 0.05094, indicating that 5.094% of instances were predicted as class 1. Balanced Accuracy: This calculates the average of sensitivity.

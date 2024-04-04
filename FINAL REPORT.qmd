@@ -1,0 +1,639 @@
+# Motivation
+This project is an exploration of the intersection of health, aging, and societal factors. It seeks to understand the complex web of social determinants that contribute to the onset of dementia, using advanced data analysis techniques. Employed tree-based machine learning models to analyze a wealth of data drawn from various sources. These sources include demographic data, medical histories, lifestyle factors, and socio-economic indicators. With this data, we aim to identify patterns and correlations that traditional methods might overlook. This project stands at the intersection of sociology, psychology, gerontology, and data science. It represents a novel approach to public health, leveraging technology to inform interventions and policies that can address the root social causes of health issues like dementia. In this manner, while the tool used (tree-based models) is a technique from machine learning, the research questions, the data used, and the interpretation of the results are all grounded in the social sciences.
+
+Dementia refers to a decline in mental ability that is significant enough to disrupt daily life, with memory loss being just one example. Rather than being a specific illness, it is a general term used to describe a set of symptoms that arise due to a decline in memory or other cognitive skills, which can hamper a person's ability to carry out daily tasks.Doctors cannot diagnose dementia through a single test. Instead, they rely on a combination of factors such as a thorough medical history, physical examination, laboratory tests, and observation of changes in thinking, behavior, and day-to-day function. While doctors can usually determine that a person has dementia, identifying the specific type can be difficult since different forms of dementia can share symptoms and brain changes. Sometimes, a doctor may diagnose dementia without specifying the exact type, and in such cases, a specialist such as a neurologist or gero-psychologist may need to be consulted.
+
+This dataset contains longitudinal data from 150 individuals aged between 60 and 96, with each subject having been scanned at least twice, with a gap of at least one year between scans. The total number of imaging sessions included in the collection is 373, and each subject has 3 or 4 individual T1-weighted MRI scans obtained in a single scan session. Both men and women are included, and all subjects are right-handed. Of the 150 subjects, 72 were considered to be free of dementia throughout the study, while 64 were initially diagnosed with dementia and remained so during subsequent scans, with 51 of these individuals having mild to moderate Alzheimer's disease. Finally, 14 individuals were initially considered to be free of dementia, but were later diagnosed with dementia during subsequent visits.
+
+## Explanation of Variables:
+
+Subject.ID
+MRI.ID
+Group (Converted / Demented / Nondemented)
+Visit - Number of visit
+
+Demographics Info
+M.F - Gender
+Age
+EDUC - Years of education
+SES - Socioeconomic status as assessed by the Hollingshead Index of Social Position and classified into categories from 1 (highest status) to 5 (lowest status)
+Clinical Info
+MMSE - Mini-Mental State Examination score (range is from 0 = worst to 30 = best)
+CDR - Clinical Dementia Rating (0 = no dementia, 0.5 = very mild AD, 1 = mild AD, 2 = moderate AD)
+Derived anatomic volumes
+eTIV - Estimated total intracranial volume, mm3
+nWBV - Normalized whole-brain volume, expressed as a percent of all voxels in the atlas-masked image that are labeled as gray or white matter by the automated tissue segmentation process
+ASF - Atlas scaling factor (unitless). Computed scaling factor that transforms native-space brain and skull to the atlas target (i.e., the determinant of the transform matrix)
+
+Mini–Mental State Examination MMSE : The Folstein Test, also called the Mini-Mental State Examination (MMSE), is a well-regarded 30-point questionnaire utilized in both clinical and research environments to evaluate cognitive deficits. This instrument, used extensively by healthcare professionals, is particularly useful for identifying potential dementia cases and tracking cognitive impairment progression over time. It's also effective for monitoring an individual's response to treatment interventions. However, it should be clarified that the MMSE alone does not provide definitive diagnosis of any particular medical condition. An MMSE score equal to or above 24 is typically considered indicative of normal cognitive function. Scores falling below this can suggest various degrees of cognitive impairment, classified as mild (19-23 points), moderate (10-18 points), or severe (9 points or less). When interpreting the raw score, factors such as age and level of education may need consideration. Notably, even a perfect MMSE score does not conclusively exclude the possibility of dementia. A low score is generally indicative of dementia, but the presence of other mental health conditions can also lead to abnormal test results. Furthermore, physical impairments, such as difficulties with hearing, vision, or motor skills, could potentially affect test interpretation if not properly addressed.
+
+The Clinical Dementia Rating (CDR) is a 5-point scale employed to assess cognitive and functional performance in six domains pertinent to Alzheimer's disease and related dementias. These include Memory, Orientation, Judgment & Problem Solving, Community Affairs, Home & Hobbies, and Personal Care. Determination of a rating in each domain requires a semi-structured interview with both the patient and a reliable informant, often a family member, as per the CDR™ Assessment Protocol. The CDR™ Scoring Table provides descriptive anchors to help clinicians assign appropriate ratings based on data collected during the interview and their clinical judgment. Alongside individual domain ratings, a comprehensive CDR™ score can be computed using the CDR™ Scoring Algorithm. This score aids in describing and monitoring the patient's overall level of impairment or dementia.
+
+0 = Normal
+0.5 = Very Mild Dementia
+1 = Mild Dementia
+2 = Moderate Dementia
+3 = Severe Dementia
+
+## Loading Libraries 
+
+```{r}
+library(randomForest)
+library(gbm)
+library(Metrics)
+library(vtreat)
+library(AUC)
+library(DataExplorer)
+library(ggplot2)
+library(dplyr)
+library(Hmisc)
+library(PerformanceAnalytics)
+library(cowplot)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(e1071)
+set.seed(123)
+data <- read.csv("Dementia.csv")
+print(sample_n(data, 5))
+```
+Obtain details on every variable in the dataset.
+
+```{r describe, message=FALSE, warning=FALSE, paged.print=TRUE}
+describe(data)
+chart.Correlation(select(data, Age, EDUC, SES, MMSE, eTIV, nWBV, ASF), histogram = TRUE, main = "Correlation between Variables")
+```
+##Data manipulation
+Earlier, it was observed that certain columns in the dataset contain null values. Therefore, the next step would be to substitute those missing values with the median value for the respective column.
+
+```{r}
+data <- select(data, -Hand) #drop Hand column since all objects were right-handed
+data$SES[is.na(data$SES)] <- median(data$SES, na.rm = TRUE)
+data$MMSE[is.na(data$MMSE)] <- median(data$MMSE, na.rm = TRUE)
+
+#creating new column with Dementia diagnosis
+data$Dementia <- 0
+data$Dementia[data$CDR == 0] <- 0
+data$Dementia[data$CDR > 0] <- 1
+data$Dementia <- as.factor(data$Dementia)
+```
+
+# Exploratory data Analysis
+Class of CDR will be our predicted value. Let's see how it depends on other variables.
+
+```{r}
+ggplot(data, aes(x=factor(M.F)))+
+  geom_bar(width=0.7, fill="steelblue")+
+  theme_minimal() + labs(title = "1. Gender distribution",
+       x = "Gender",
+       y = "Count")
+```
+More females than males in this scenario.
+
+```{r}
+ggplot(data = data,
+       aes(
+         x = Group,
+         y = prop.table(stat(count)),
+         fill = factor(data$M.F), width = -6,
+         label = scales::percent(prop.table(stat(count)))
+       )) +
+  geom_bar(position = position_dodge(), width = 0.4) + theme(axis.text = element_text(size = -0.5))+
+  geom_text(
+    stat = "count",
+    position = position_dodge(.8),
+    vjust = -1,
+    size = 2.5
+  ) + scale_y_continuous(labels = scales::percent) +
+  labs(title = "2. Group of Dementia based on Gender",
+       x = "Group",
+       y = "Count") +
+  theme_classic() +
+  scale_fill_discrete(
+    name = "Gender",
+    labels = c("Female", "Male")
+  )
+```
+We can see that the highest is Non-demented people and the highest is Females.
+
+A violin plot is a graphical representation that shows the distribution of numerical data for one or multiple groups using density curves. The thickness of each curve represents the approximate frequency of data points in that region. It is a type of data visualization that is effective for comparing the distribution of numeric data across one or more groups. It is a useful tool for identifying differences and similarities between groups and for observing the shape and density of each distribution.
+
+```{r}
+data %>%
+    select(Subject.ID, Age, CDR, M.F) %>%
+    group_by(Subject.ID, CDR, M.F) %>%
+    summarise_all(funs(min)) %>%
+    as.data.frame() %>%
+    mutate(CDR = as.factor(CDR)) %>%
+ggplot(aes(x = CDR, y = Age, fill = M.F)) + 
+    geom_violin() +
+    labs(title = "3. Distribution of Age by CDR rate",
+         fill = "Sex") +
+    theme_light()
+```
+There does not appear to be a clear correlation between age, sex, and the diagnosis of dementia.
+
+The jitter geom is a convenient shortcut for geom_point(position = "jitter"). It introduces a slight amount of random variation to the placement of each point, which can be beneficial in addressing the issue of overplotting that arises from the limited amount of data points in smaller datasets.
+```{r}
+x <- data %>%
+    select(EDUC, CDR, M.F) %>%
+    mutate(CDR = as.factor(CDR)) %>%
+ggplot(aes(x = CDR, y = EDUC)) + 
+    geom_jitter(aes(col = CDR), alpha = 0.6) +
+    labs(title = "x") +
+    theme_light()
+
+y <- data %>%
+    select(SES, CDR, M.F) %>%
+    mutate(CDR = as.factor(CDR)) %>%
+ggplot(aes(x = CDR, y = SES)) + 
+    geom_jitter(aes(col = CDR), alpha = 0.6) +
+    labs(title = "x") +
+    theme_light()
+
+p <- plot_grid(x, y) 
+title <- ggdraw() + draw_label("4. Distribution of Education and Social Economic Status", fontface='bold')
+plot_grid(title, p, ncol=1, rel_heights=c(0.1, 1))
+
+```
+There is still no clear association observed between the level of education and socioeconomic status, and the diagnosis of dementia.
+
+```{r}
+x <- data %>%
+    select(MMSE, CDR, M.F) %>%
+    mutate(CDR = as.factor(CDR)) %>%
+ggplot(aes(x = CDR, y = MMSE)) + 
+    geom_jitter(aes(col = CDR), alpha = 0.6) +
+    labs(title = "x") +
+    theme_light()
+
+y <- data %>%
+    select(nWBV, CDR, M.F) %>%
+    mutate(CDR = as.factor(CDR)) %>%
+ggplot(aes(x = CDR, y = nWBV)) + 
+    geom_jitter(aes(col = CDR), alpha = 0.6) +
+    labs(title = "x") +
+    theme_light()
+p <- plot_grid(x, y) 
+title <- ggdraw() + draw_label("5. Distribution of MMSE Score and Wole-brain Volume", fontface='bold')
+plot_grid(title, p, ncol=1, rel_heights=c(0.1, 1))
+
+```
+The MMS test scores of individuals without Dementia tend to cluster around 27-30 points, whereas the scores of those diagnosed with Dementia appear to be more widely distributed. We observe that some individuals have the highest MMSE scores, but still have a Clinical Dementia Rating of 0.5 or 1. There does not appear to be a clear relationship between Estimated total intracranial volume and Dementia Diagnosis.
+
+```{r}
+x <- data %>%
+    select(eTIV, CDR, M.F) %>%
+    mutate(CDR = as.factor(CDR)) %>%
+ggplot(aes(x = CDR, y = eTIV)) + 
+    geom_jitter(aes(col = CDR), alpha = 0.6) +
+    labs(title = "x") +
+    theme_light()
+
+y <- data %>%
+    select(ASF, CDR, M.F) %>%
+    mutate(CDR = as.factor(CDR)) %>%
+ggplot(aes(x = CDR, y = ASF)) + 
+    geom_jitter(aes(col = CDR), alpha = 0.6) +
+    labs(title = "x") +
+    theme_light()
+p <- plot_grid(x, y) 
+title <- ggdraw() + draw_label("6. Distribution of Total Intracranial Volume and Atlas Scaling Factor", fontface='bold')
+plot_grid(title, p, ncol=1, rel_heights=c(0.1, 1))
+
+```
+The whole-brain volume that has been normalized appears to have a wider range for subjects with a CDR score of 0, but narrows as the CDR score increases. However, there doesn't seem to be a clear relationship between the atlas scaling factor and dementia diagnosis.
+
+```{r, warning=FALSE}
+data %>% 
+  ggplot(aes(CDR,fill=CDR))+geom_bar()+
+  theme_minimal()+
+  labs(x="Clinical Dementia Rating",y="Frequency",title="7. CDR Distribution")+
+  theme(plot.title = element_text(hjust=0.5,color="black",
+                                  family="Comic Sans MS",face="bold"),
+        axis.text = element_text(face="italic",size=12))+
+  scale_fill_manual(values=c(RColorBrewer::brewer.pal(4,"PuRd")))
+```
+Here we can see that Majority of the patients are Normal followed by Very Mild Dementia and then followed by patients with Mild Dementia.
+
+```{r}
+plot_boxplot(data, by = "CDR")
+
+```
+#Tree-based Models 
+Tree-based models, such as decision trees, random forests, and gradient boosting machines, are popular in machine learning due to several advantages:
+
+Interpretability: Decision trees are straightforward to understand because they mimic human decision-making more closely than other types of models. The tree-like model structure, where each node represents a decision based on a single feature, can be visualized and explained easily.
+
+Non-linearity: Tree-based models can handle complex non-linear relationships between features and the target variable, making them versatile and widely applicable.
+
+Feature Interactions: They automatically consider interactions between variables, which can be a significant advantage over other algorithms for certain types of data.
+
+Scalability: Techniques such as random forests and gradient boosting can handle large datasets and high-dimensional data quite well, making them suitable for many real-world applications.
+
+Less Preprocessing: They require less preprocessing of data than other machine learning techniques. Features don't need to be scaled or centered and they can handle mixed data types (categorical and numerical).
+
+### Preparation and splitting the data
+
+```{r}
+#prepairing data
+df <- data %>%
+  select(M.F, Age, EDUC, SES, MMSE, eTIV, nWBV, ASF, CDR) %>%
+  mutate(CDR = as.factor(CDR))
+
+n_train <- round(0.8 * nrow(df)) #80%  data set (length) as integer
+train_index <- sample(1:nrow(df), n_train) #creating a vector with random indices
+train <- df[train_index, ] #creating train data set 
+test <- df[-train_index, ] #creating test data set
+
+formula <- CDR ~ M.F + Age + EDUC + SES + MMSE + eTIV + nWBV #CDR as response and all other variables as predictors
+k <- 5   #(k=5)cross validation
+splitPlan <- kWayCrossValidation(nrow(df), k, NULL, NULL) #creating 5-folds cross validation idea
+```
+
+The training formula is: CDR is predicted by the variables M.F, Age, EDUC, SES, MMSE, eTIV, and nWBV. Atlas Scaling Factor (ASF) has been removed from the formula due to its linear dependancy leading to multicollinearity.
+
+## Decision Tree Model
+
+Decision trees are a popular choice in many machine learning applications because they offer several unique benefits:
+
+Interpretability: One of the primary strengths of decision trees is their interpretability. They are simple to understand and interpret as they mimic human decision-making process. A decision tree can easily be visualized and explained, making it a preferred choice when model interpretability is a crucial factor.
+
+Handling of Non-linear Data: Decision trees can easily handle both linear and non-linear data. They can model complex relationships between predictors and the target variable by dividing the feature space into smaller regions.
+
+Moving forward, we'll begin by training a fundamental decision tree model and showcasing the results to pinpoint the best complexity parameter (CP) value through cross-validation. The complexity parameter serves to control the decision tree's size and to help choose the most fitting tree size.
+
+```{r}
+
+opt_compar <- 0 #list with optimal parameters
+for(i in 1:k) {
+  split <- splitPlan[[i]]
+  #training decision tree model
+  model_crossv <- rpart(formula = formula,
+               data = df[split$train,],
+               method = "class")
+  #get the best CP value
+  opt_compar[i] <- model_crossv$cptable[which.min(model_crossv$cptable[,"xerror"]),"CP"]
+}
+
+#training the model with optimal CP parameter on whole data set
+model_decisiontree <- rpart(formula = formula,
+               data = df,
+               method = "class",
+               cp = mean(opt_compar))
+
+#plot decision tree model
+prp(x = model_decisiontree, type=1, extra = 102)
+
+```
+
+```{r}
+#testing the model
+prediction_dt <- predict(object = model_crossv,
+                newdata = df,
+                type = "class")
+
+#print confusion matrix
+confusionMatrix(data = prediction_dt,
+                reference = df$CDR)
+```
+The confusion matrix presents the counts of predicted classes (rows) compared to the actual reference classes (columns). For example, in the first row, the model predicted class 0 for 182 instances where the actual reference class was also 0. Similarly, the model predicted class 0.5 for 88 instances where the actual reference class was 0.5.
+
+####Overall Statistics:
+
+Accuracy: The overall accuracy of the model is 0.7641 , indicating that approximately 78.28% of the predictions were correct. 95% CI: The 95% confidence interval for the accuracy ranges from 0.7176 to 0.8063. No Information Rate (NIR): The NIR represents the accuracy that could be achieved by always predicting the most frequent class in the data. In this case, the NIR is 0.5523, suggesting that the model performs significantly better than simply predicting the most common class. Kappa: The Kappa statistic measures the agreement between the predicted and actual classes, considering the possibility of agreement occurring by chance. A value of 0.5735 5 indicates moderate agreement.
+
+#### Statistics by Class:
+In summary, the model performs well when identifying Class 0 instances but struggles more with the other classes, particularly Class 2, which it fails to identify at all. This could be due to the fact that Class 2 is the least prevalent, suggesting the model might benefit from more balanced data or a different approach to handling minority classes.
+
+```{r}
+AUC_dt <- Metrics::auc(actual = df$CDR, predicted = prediction_dt) #calculating AUC
+AUC_dt
+```
+The AUC ranges from 0 to 1. An AUC of 1 indicates a perfect model that has 100% sensitivity and 100% specificity. An AUC of 0.5 corresponds to a model that cannot distinguish between the classes any better than random chance.
+
+In this case, the AUC of the decision tree model is approximately 0.8294. This means that if you randomly select one positive and one negative example from your data, there's about an 82.94% chance that your model will rank the positive example higher than the negative one. This suggests that your model has fairly good discriminative power, though there's still room for improvement.
+
+Let’s make sure that we did not overfit the model and test model using cross-validation
+
+```{r}
+prediction_dt_cv <- integer(length(df$CDR))
+for (i in 1:k) {
+  split <- splitPlan[[i]]
+  # Training decision tree model
+  model_crossv <- rpart(
+    formula = formula,
+    data = df[split$train, ],
+    method = "class",
+    cp = mean(opt_compar)
+  )
+  # Testing the model
+  predictions <- predict(
+    object = model_crossv,
+    newdata = df[split$app, ],
+    type = "class"
+  )
+  prediction_dt_cv[split$app] <- as.integer(predictions)
+}
+
+# Convert predictions to the original scale
+prediction_dt_cv <- factor(prediction_dt_cv, levels = c(1, 2, 3, 4), labels = c(0, 0.5, 1, 2))
+
+# Calculate confusion matrix
+confusionMatrix(
+  data = prediction_dt_cv,
+  reference = df$CDR
+)
+```
+
+
+
+```{r}
+AUC_dt_cv <- Metrics::auc(actual = df$CDR, predicted = prediction_dt_cv)
+
+print(paste0("AUC of the full model's predictions = ", round(AUC_dt, 3)))
+```
+
+The AUC ranges from 0 to 1, where a value of 0 indicates that the model's predictions are completely incorrect, and a value of 1 signifies perfect prediction. Therefore, an AUC value of 0.829 suggests that the model's predictions have relatively good discriminatory power in distinguishing individuals with dementia from those without.
+
+In other words, the model, based on its performance as measured by AUC, shows reasonable accuracy in distinguishing individuals who are likely to have dementia from those who are not. However, it's important to consider other evaluation metrics and further analysis to gain a comprehensive understanding of the model's overall performance and any potential limitations or considerations.
+
+```{r}
+cat("AUC of the cross-validation predictions =", round(AUC_dt_cv, 3), "\n")
+
+```
+
+In this case, the AUC value of 0.849 obtained from cross-validation suggests that the model's predictions consistently perform well across different folds of the data. It indicates that the model's ability to discriminate between individuals with dementia and those without remains consistent and reliable across different subsets of the data.
+
+Having a higher AUC value for cross-validation compared to the AUC of the full model's predictions (0.849 vs. 0.829) indicates that the model's performance is more robust when evaluated using cross-validation. It suggests that the model is not overfitting the data and is generalizing well to unseen instances.
+
+##Random Forest 
+
+```{r}
+# Assign parameters before function call
+formula_value <- formula
+data_value <- train
+importance_value <- TRUE
+
+# Then use randomForest as before:
+model_randomForest <- randomForest(formula = formula_value,
+                         data = data_value,
+                         importance = importance_value)
+
+# Print the model output                             
+print(model_randomForest)
+
+
+```
+OOB estimate of error rate: Out-of-Bag (OOB) error is a method of measuring the prediction error of random forests. When the model is being constructed, around one-third of cases are left out of the bootstrapped sample and not used in the construction of the kth tree. The model predicts the class of the left-out cases (hence, out of bag). Here, the OOB error rate is 25.17%, which is relatively high, suggesting that the model might need further tuning or refinement.
+```{r}
+# Assign parameters before function call
+main_title <- "Model Error by Number of Trees"
+legend_position <- "right"
+legend_labels <- colnames(model_randomForest$err.rate)
+legend_fill <- 1:ncol(model_randomForest$err.rate)
+
+# Then use plot and legend as before
+plot(model_randomForest, main = main_title)
+legend(x = legend_position, legend = legend_labels, fill = legend_fill)
+```
+
+```{r}
+varImpPlot(model_randomForest, main = "Feature Importance") #plot variance importance
+```
+
+```{r}
+# Establish a list of possible values for mtry, nodesize, and sampsize
+mtry <- seq(4, ncol(train), 2)
+nodesize <- seq(3, 8, 2)
+sampsize <- as.integer(nrow(train) * c(0.7, 0.8, 0.9))
+
+# Create a data frame containing all combinations 
+hyper_grid <- expand.grid(mtry = mtry, nodesize = nodesize, sampsize = sampsize)
+
+# Define a function to train a Random Forest model and return OOB error
+train_oob <- function(hyperparams) {
+    model_random <- randomForest(formula = formula,
+                                 data = train,
+                                 mtry = hyperparams["mtry"],
+                                 nodesize = hyperparams["nodesize"],
+                                 sampsize = hyperparams["sampsize"])
+    model_random$err.rate[nrow(model_random$err.rate), "OOB"]
+}
+
+# Use apply to train models for all combinations and store OOB errors
+oob_error <- apply(hyper_grid, 1, train_oob)
+
+# Identify optimal set of hyperparameters based on OOB error
+opt_i <- which.min(oob_error)
+
+# Train a final Random Forest model with optimal parameters
+model_random_final <- randomForest(formula = formula,
+                                   data = train,
+                                   mtry = hyper_grid$mtry[opt_i],
+                                   nodesize = hyper_grid$nodesize[opt_i],
+                                   sampsize = hyper_grid$sampsize[opt_i])
+
+# Make predictions with the final model
+prediction_randomForest <- predict(model_random_final, newdata = select(test, -CDR), type = "class")
+
+# Compute confusion matrix
+confusionMatrix(data = prediction_randomForest, reference = test$CDR)
+
+```
+Accuracy: Accuracy is a metric that measures the overall correctness of the model. It's the ratio of correctly predicted instances to the total instances in the dataset. Here, the accuracy of the model is 0.7067, or about 70.67%. This means the model made correct predictions for about 70.67% of the instances.
+
+95% CI: This represents the 95% confidence interval for the accuracy. This interval gives us a range of likely values for the true accuracy of the model. The wider the range, the less precise our estimate of accuracy. In this case, we can be 95% confident that the true accuracy of the model lies somewhere between 59.02% and 80.62%.
+
+P-Value [Acc > NIR]: This is the p-value for the statistical test that the model's accuracy is greater than the NIR. A small p-value (generally, less than 0.05) indicates strong evidence that the model's accuracy is significantly better than the NIR. In this case, the p-value is 0.000771, which is less than 0.05, providing strong evidence that the model is performing better than simply guessing the most frequent class.
+```{r}
+AUC_randomForest <- Metrics::auc(actual = test$CDR, predicted = prediction_randomForest)
+AUC_randomForest
+```
+In this case, the AUC of the random forest model is approximately 0.7985. This means that if you randomly select one positive and one negative example from the test data, there's about a 79.85% chance that your random forest model will rank the positive example higher than the negative one. This suggests that the model has fairly good discriminative power, though there's still room for improvement.
+## Gradient Boost Machine
+
+Gradient Boosting Machines (GBMs) can be helpful in addressing various dementia-related problems due to their ability to handle complex, nonlinear relationships and make accurate predictions.
+
+```{r}
+# Convert the 'M.F' column to a factor
+train$M.F <- as.factor(train$M.F)
+
+# Then use gbm.fit as before:
+model_gbm <- gbm.fit(x = select(train, -CDR),
+                     y = train$CDR,
+                     distribution = "multinomial", 
+                     n.trees = 5000,
+                     shrinkage = 0.01,
+                     nTrain = round(nrow(train) * 0.8),
+                     verbose = FALSE)
+                    
+# Print the model object                    
+print(model_gbm)
+```
+
+
+
+```{r}
+summary(model_gbm)
+
+```
+
+```{r}
+# Assign parameters before function call
+object_value <- model_gbm
+newdata_value <- select(test, -CDR)
+type_value <- "response"
+n_trees_value <- gbm.perf(model_gbm, plot.it = FALSE)
+
+prediction_gbm <- predict.gbm(object = object_value, 
+                              newdata = newdata_value,
+                              type = type_value,
+                              n.trees = n_trees_value)
+```
+
+
+
+```{r, warning=TRUE}
+predicted_labels_gbm <- factor(prediction_gbm, levels = 1:length(levels(test$CDR)), labels = levels(test$CDR))
+
+confusion_matrix_gbm <- confusionMatrix(predicted_labels_gbm, test$CDR)
+print(confusion_matrix_gbm)
+```
+Accuracy: This is the proportion of total predictions that the model got right. In this case, the model's accuracy is 0.68 or 68%, which means that the model correctly predicted 68% of the instances.
+
+95% CI: This is the 95% confidence interval for the accuracy score. It gives an estimated range where the true model accuracy may lie, with 95% confidence. Here, the interval is between 56.22% and 78.31%.
+
+P-Value [Acc > NIR]: This is the probability of observing the given data (or data more extreme) if the null hypothesis were true. The null hypothesis here is that the accuracy of the model is not better than the no information rate. A small p-value (typically, less than 0.05) suggests that we can reject the null hypothesis. In this case, the p-value is 0.003611, which is less than 0.05, therefore, it's likely that the model's accuracy is better than the NIR.
+
+```{r}
+# Assign parameters before function call
+actual_value <- test$CDR
+predicted_value <- prediction_gbm
+
+# Then use auc as before:
+AUC_gbm <- Metrics::auc(actual = actual_value, predicted = predicted_value)
+AUC_gbm
+```
+
+AUC (Area Under the Curve) is a metric used to evaluate the performance of a binary classification model, typically in machine learning. It represents the area under the receiver operating characteristic (ROC) curve.The AUC measures the overall performance of the model across all possible classification thresholds.AUC is a widely used metric to assess the quality of a binary classification model. A higher AUC value indicates better discrimination power and predictive accuracy.
+
+The Area Under the Curve (AUC) for the Gradient Boosting Machine (GBM) model is approximately 0.82. This value suggests that the model has a good discriminative ability, meaning it is effective in distinguishing between different classes of the outcome variable, in this case, the Clinical Dementia Rating (CDR). An AUC of 0.82 indicates that there is an 82% chance that the model will correctly differentiate between a randomly chosen pair of individuals, one with dementia and one without.
+
+```{r}
+# Assuming 'train' and 'test' are your datasets and they contain the same columns that are supposed to be factors
+categorical_variables <- c("M.F", "CDR")  # Update this list with all your categorical variables
+
+# Ensure factor levels are consistent between train and test sets
+for (variable in categorical_variables) {
+  if (variable %in% names(train) && variable %in% names(test)) {
+    # Combine levels from both datasets
+    all_levels <- union(levels(train[[variable]]), levels(test[[variable]]))
+    
+    # Apply the combined levels to both datasets
+    train[[variable]] <- factor(train[[variable]], levels = all_levels)
+    test[[variable]]  <- factor(test[[variable]], levels = all_levels)
+  }
+}
+
+# Train the Random Forest model
+model_rf <- randomForest(CDR ~ ., data = train)
+
+# Make predictions
+prediction_rf <- predict(model_rf, newdata = test)
+
+# Calculate the confusion matrix
+confusion_matrix_rf <- confusionMatrix(prediction_rf, test$CDR)
+
+# Print the confusion matrix
+print(confusion_matrix_rf)
+
+```
+The confusion matrix shows the performance of the Random Forest model on the test dataset. Here's the summary:
+
+Overall Accuracy: The model has an accuracy of 77.33%, which means it correctly predicted the class for 77.33% of the instances in the test set.
+Kappa: The Kappa statistic is 0.6024, indicating a substantial agreement between the predicted and actual classes, beyond what would be expected by chance.
+Sensitivity/Recall:
+For Class 0 (no dementia), the sensitivity is 82.05%.
+For Class 0.5 (very mild dementia), the sensitivity is 78.57%.
+For Class 1 (mild dementia), the sensitivity is 50%.
+Specificity:
+The model is particularly good at correctly identifying non-cases for Classes 0.5 and 1, with specificities of 78.72% and 98.51%, respectively.
+Positive Predictive Value (PPV)/Precision:
+For Class 0, the precision is 84.21%.
+For Class 0.5, the precision is 68.75%.
+For Class 1, the precision is 80%.
+Negative Predictive Value (NPV):
+For Class 0, the NPV is 81.08%.
+For Class 0.5, the NPV is 86.05%.
+For Class 1, the NPV is 94.29%.
+Prevalence: Indicates the actual occurrence of each class in the test set.
+Detection Rate: Indicates how many instances of each class were correctly identified.
+Detection Prevalence: Shows the total instances predicted for each class by the model.
+Balanced Accuracy: Averages the sensitivity and specificity, providing a more balanced performance metric especially useful for imbalanced datasets.
+Class 2 has no instances in the test set, which is why its metrics are not applicable (NA).
+
+Overall, the Random Forest model shows good performance, especially for Classes 0 and 0.5. However, there is room for improvement in identifying Class 1 instances, as indicated by the lower sensitivity for this class.
+
+```{r}
+# Define a list of models with the name as an additional parameter
+predictions <- list(
+  dt_cv = list(name = "Decision Tree Model", prediction = prediction_dt_cv, data = df$CDR, color = "red", lty = 2),
+  gbm = list(name = "GBM Model", prediction = prediction_gbm, data = test$CDR, color = "green", lty = 4),
+  rf = list(name = "Random Forest Model", prediction = prediction_rf, data = test$CDR, color = "blue", lty = 3)
+)
+
+# Calculate the ROC for each model and store the results in the same list
+predictions <- lapply(predictions, function(.x) {
+  .x$roc <- AUC::roc(.x$prediction, .x$data)
+  return(.x)
+})
+
+# Prepare for ggplot2
+df <- do.call(rbind, lapply(predictions, function(x) {
+  data.frame(fp = x$roc$fp, tp = x$roc$tp, model = x$name, color = x$color, lty = x$lty)
+}))
+
+# Plot each ROC curve
+ggplot(df, aes(x = fp, y = tp, color = model, linetype = model)) +
+  geom_line() +
+  scale_color_manual(values = unique(df$color)) +
+  scale_linetype_manual(values = unique(df$lty)) +
+  labs(title = "ROC") +
+  theme_minimal()
+
+```
+The ROC (Receiver Operating Characteristic) curve generated illustrates the performance of three different models: Decision Tree, GBM (Gradient Boosting Machine), and Random Forest. Here’s what the graph indicates about each model:
+
+Decision Tree Model (Red Dashed Line): This model's curve suggests that it has a good balance between true positive rate (sensitivity) and false positive rate (1-specificity). In ROC space, this curve seems closer to the top-left corner, which is indicative of better performance.
+
+GBM Model (Green Dash-Dot Line): The GBM model appears to perform slightly better than the Decision Tree, with the ROC curve being higher and more towards the left side, representing a higher true positive rate for most thresholds.
+
+Random Forest Model (Blue Dotted Line): The Random Forest model shows an ROC curve that seems to be the best among the three, lying higher in the graph, which implies a higher true positive rate and better performance in distinguishing the classes.
+
+```{r}
+print(paste0("AUC for Random Forest Model = ", round(AUC_randomForest, 3)))
+```
+
+```{r}
+print(paste0("AUC for GBM Model = ", round(AUC_gbm, 2)))
+
+```
+The AUC (Area Under the Curve) values calculated for each model align with this interpretation. The Random Forest Model has an AUC of 0.799, and the GBM Model has an AUC of 0.82, which are both considered good performance metrics. AUC values closer to 1 indicate better discrimination ability of the model.
+
+```{r}
+# Plot each ROC curve with legend
+plot <- ggplot() +
+  map2(predictions, names(predictions), ~{
+    geom_line(aes(x = .x$roc$fp, y = .x$roc$tp, color = .y), linetype = .x$lty)
+  }) +
+  labs(title = "ROC") +
+  scale_color_manual(values = c("dt_cv" = 1, "gbm" = 3, "rf" = 4), 
+                     labels = c("dt_cv" = "Decision Tree Model", "gbm" = "GBM Model", "rf" = "Random Forest Model"),
+                     name = "Model")
+
+print(plot)
+
+```
+
+As far as we can see Decision Tree Model gives better results. Accuracy of prediction is about ~77%. It's evident that the Clinical Dementia Rating is significantly influenced by the results of the Mini-Mental State Examination, whereas factors like Age, Educational Level, and Socio-Economic Status don't have a substantial impact. However, we must bear in mind that Dementia and Alzheimer's disease are intricate mental conditions, and thus we cannot depend entirely on Machine Learning algorithms for diagnosis. What these algorithms can do, though, is indicate a higher likelihood of a Dementia diagnosis for individuals with specific characteristics, based on data from other individuals with similar traits.
